@@ -52,8 +52,8 @@ GROQ_MODEL='your-chosen-model'
 GITHUB_TOKEN='your-github-token-here'
 
 # Optional -- overrides for server links / branding (defaults apply if unset)
-INVITE_URL='https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID'
-SUPPORT_SERVER='https://discord.gg/YOUR_INVITE'
+INVITE_URL='https://discord.com/oauth2/authorize?client_id=1545113823848038470&permissions=8&integration_type=0&scope=bot'
+SUPPORT_SERVER='https://GitHub.com/guptamaan/SuperAlpha-Do'
 OWNER_HANDLE='@r4ve_x'
 GIT_REPO='guptamaan/SuperAlpha-Do'
 ```
