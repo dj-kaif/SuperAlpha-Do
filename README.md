@@ -54,8 +54,8 @@ GITHUB_TOKEN='your-github-token-here'
 # Optional -- overrides for server links / branding (defaults apply if unset)
 INVITE_URL='https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID'
 SUPPORT_SERVER='https://discord.gg/YOUR_INVITE'
-OWNER_HANDLE='@your_handle'
-GIT_REPO='yourname/SuperAlpha-Do'
+OWNER_HANDLE='@r4ve_x'
+GIT_REPO='guptamaan/SuperAlpha-Do'
 ```
 
 4. Start the bot:
