@@ -14,11 +14,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+
 import bot.cogs.journal as _journal
 from bot.config.settings import INVITE_URL, OWNER_HANDLE, SUPPORT_SERVER
 from bot.services.git_ops import GIT_REPO, _gh_issue, _gh_pr, _git_date, _latest_commits, _local_head, _local_latest
 from bot.services.host_health import START_TIME, _bar, _bot_age, _cpu_usage, _load_avg, _mem_info, _task_count
 from bot.services.man_search import ManSearchView, ManView, _make_man_embed, _search_commands
+from ansi import Color as C, c
 
 class System(commands.Cog, name="system"):
     """Core system commands (ping, uptime, man, reload, shutdown)."""
@@ -46,11 +48,19 @@ class System(commands.Cog, name="system"):
         rtt = round((_t.monotonic() - before) * 1000)
         ws  = self._ws_ms()
         await msg.edit(content=(
-            f"```bash\n$ alpha ping discord.com\n"
-            f"PING discord.com: 64 bytes\n"
-            f"icmp_seq=1  ws={ws} ms  rtt={rtt} ms\n```"
-        ))
+            f"```ansi\n"
+            f"{c(C.BOLD, C.WHITE, '$')} "
+            f"{c(C.BOLD, C.CYAN, 'alpha ping discord.com')}\n"
+            
+            f"{c(C.BOLD, C.WHITE, 'PING')} {c(C.CYAN, 'discord.com:')} {c(C.WHITE, '(64 bytes)')}\n\n"
+            
+            f"{c(C.WHITE, 'icmp_seq:')} {c(C.WHITE, '1')}\n"
+    
+            f"{c(C.CYAN, 'ws:')} {c(C.BOLD, C.YELLOW, '158 ms')}\n"
 
+            f"{c(C.YELLOW, 'rtt:')} {c(C.BOLD, C.RED, '1009 ms')}\n```"
+))
+        
     # ── latency ───────────────────────────────────────────────────────────────
     @commands.command(name="latency", aliases=["lag", "netstat"])
     async def latency(self, ctx: commands.Context) -> None:

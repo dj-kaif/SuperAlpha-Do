@@ -27,7 +27,7 @@ pip install -r requirements.txt
 
 ---
 
-## Setup
+Setup
 
 1. Clone the repository:
 ```
@@ -35,12 +35,23 @@ git clone https://github.com/guptamaan/SuperAlpha-Do.git
 cd SuperAlpha-Do
 ```
 
-2. Install dependencies:
+2. Create and activate a virtual environment:
+```
+python3 -m venv .venv
+
+# Linux / macOS
+source .venv/bin/activate
+
+# Windows
+.venv\Scripts\activate
+```
+
+3. Install dependencies:
 ```
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file in the project root (this file is gitignored):
+4. Create a ".env" file in the project root (this file is gitignored):
 ```
 DISCORD_TOKEN='your-bot-token-here'
 
@@ -56,14 +67,18 @@ INVITE_URL='https://discord.com/oauth2/authorize?client_id=1545113823848038470&p
 SUPPORT_SERVER='https://GitHub.com/guptamaan/SuperAlpha-Do'
 OWNER_HANDLE='@r4ve_x'
 GIT_REPO='guptamaan/SuperAlpha-Do'
+``` 
+
+Or copy the ".env.example" file:
+```
+cp .env.example .env
 ```
 
-4. Start the bot:
+5. Start the bot:
 ```
 python3 main.py
 ```
 
----
 
 ## Configuration
 
@@ -85,7 +100,6 @@ Per-guild configuration and per-user data are stored under the `data/` directory
 ## How do we name updates?
 The updates are named using the following format - year.month.date
 If the update is the first update of the day then it is simply the year.month.date and the succeeding updates have letter paired with the date in alphabetical order
-
 E.g. For the first update of the date 1/1/2027 the update will be - 27.1.1
 
 And for the second update on the same date will be 27.1.1A
