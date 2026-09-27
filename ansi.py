@@ -11,15 +11,6 @@ class Color:
     CYAN    = 36
     WHITE   = 37
 
-    # Bright foreground
-    BRIGHT_BLACK   = 90
-    BRIGHT_RED     = 91
-    BRIGHT_GREEN   = 92
-    BRIGHT_YELLOW  = 93
-    BRIGHT_BLUE    = 94
-    BRIGHT_MAGENTA = 95
-    BRIGHT_CYAN    = 96
-    BRIGHT_WHITE   = 97
 
     # Background
     BG_BLACK   = 40
@@ -31,26 +22,12 @@ class Color:
     BG_CYAN    = 46
     BG_WHITE   = 47
 
-    # Bright background
-    BG_BRIGHT_BLACK   = 100
-    BG_BRIGHT_RED     = 101
-    BG_BRIGHT_GREEN   = 102
-    BG_BRIGHT_YELLOW  = 103
-    BG_BRIGHT_BLUE    = 104
-    BG_BRIGHT_MAGENTA = 105
-    BG_BRIGHT_CYAN    = 106
-    BG_BRIGHT_WHITE   = 107
+
 
     # Styles
     RESET = 0
     BOLD = 1
-    DIM = 2
-    ITALIC = 3
     UNDERLINE = 4
-    BLINK = 5
-    REVERSE = 7
-    HIDDEN = 8
-    STRIKETHROUGH = 9
 
 
 def c(*args):
