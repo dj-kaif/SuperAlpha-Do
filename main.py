@@ -15,10 +15,10 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-import ansi
 from bot.cogs.linux import apply_linux_aliases
 from bot.config.settings import BANNED_GUILDS, BANNED_USERS
 from bot.core.bot import get_prefix, make_bot
+from bot.services import ansi
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 load_dotenv()

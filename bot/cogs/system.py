@@ -17,11 +17,11 @@ from discord.ext import commands
 
 import bot.cogs.journal as _journal
 from bot.config.settings import INVITE_URL, OWNER_HANDLE, SUPPORT_SERVER
+from bot.services import ansi
+from bot.services.ansi import Color as C, c
 from bot.services.git_ops import GIT_REPO, _gh_issue, _gh_pr, _git_date, _latest_commits, _local_head, _local_latest
 from bot.services.host_health import START_TIME, _bar, _bot_age, _cpu_usage, _load_avg, _mem_info, _task_count
 from bot.services.man_search import ManSearchView, ManView, _make_man_embed, _search_commands
-import ansi
-from ansi import Color as C, c
 
 
 _STATE_COLORS = {
@@ -471,7 +471,7 @@ class System(commands.Cog, name="system"):
         else:
             lines.append(f"{ansi.note('(nothing running)')}")
 
-        return ansi.term(*(ansi.clip(line, 104) for line in lines))
+        return ansi.term(*(ansi.clip(line, 104) for line in lines), limit=ansi.embed_limit())
 
     def _htop_process_rows(self) -> list[str]:
         rows: list[str] = []
@@ -535,6 +535,7 @@ class System(commands.Cog, name="system"):
                 + ansi.term(
                     ansi.prompt("alpha invite"),
                     ansi.ok("Invite URL generated."),
+                    limit=ansi.embed_limit(),
                 )
             ),
             color=0x2ECC71,
@@ -687,6 +688,7 @@ class System(commands.Cog, name="system"):
                 + ansi.term(
                     ansi.prompt("alpha invite"),
                     ansi.ok("Invite URL generated."),
+                    limit=ansi.embed_limit(),
                 )
             ),
             color=0x2ECC71,

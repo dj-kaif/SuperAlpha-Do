@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from discord.ext import commands
 
-import ansi
-from ansi import Color as C, c
 from bot.cogs.system import INVITE_URL, OWNER_HANDLE, SUPPORT_SERVER, System
+from bot.services import ansi
+from bot.services.ansi import Color as C, c
 
 from helpers import REPO_ROOT, USER_IDS, make_ctx, make_guild, make_member, strip_ansi
 
@@ -271,3 +271,71 @@ def test_latency_colour_bands():
 
 def test_term_wraps_in_ansi_fence():
     assert ansi.term("a", "b") == "```ansi\na\nb\n```"
+
+
+# ── Discord length limits ─────────────────────────────────────────────────────
+# Discord validates the raw string, and colour codes are invisible characters
+# that count toward the cap.
+def _assert_block_fits(name: str, block: str, cap: int) -> None:
+    assert len(block) <= cap, f"{name}: {len(block)} raw chars exceeds {cap}"
+    assert block.startswith("```ansi\n"), name
+    assert block.endswith("\n```"), name
+    reset = f"\x1b[{C.RESET}m"
+    for line in block[len("```ansi\n") : -len("\n```")].split("\n"):
+        seqs = re.findall(r"\x1b\[[0-9;]*m", line)
+        assert len([s for s in seqs if s != reset]) <= seqs.count(reset), repr(line)
+
+
+def test_term_keeps_newest_lines_and_marks_the_rest():
+    lines = [ansi.note(f"line {i}") for i in range(500)]
+    block = ansi.term(*lines, limit=400)
+
+    _assert_block_fits("term(400)", block, 400)
+    body = block[len("```ansi\n") : -len("\n```")]
+    assert "line 499" in strip_ansi(body), "newest line must survive"
+    assert "line 0" not in strip_ansi(body), "oldest line should be dropped"
+    assert "not shown" in strip_ansi(body)
+
+
+def test_term_clips_a_single_oversized_line():
+    block = ansi.term(ansi.note("z" * 9000))
+
+    _assert_block_fits("term(monster)", block, ansi.embed_limit())
+    body = strip_ansi(block)
+    assert body.startswith("```ansi\nz")
+    assert body.endswith("…\n```")
+
+
+def test_term_survives_when_every_line_is_oversized():
+    block = ansi.term(*([ansi.note("z" * 9000)] * 3), limit=500)
+
+    _assert_block_fits("term(all monsters)", block, 500)
+
+
+def test_embed_sites_fit_the_embed_limit():
+    """The journal embeds are the widest terminal output the bot builds."""
+    from bot.cogs.journal import HISTORY_LIMIT, MAX_SHOW, _render
+
+    entries = [
+        {
+            "ts": 1756400000, "guild": "G" * 12, "user": "U" * 12, "uid": "9" * 11,
+            "kind": "sudo", "cog": "musi", "cmd": "c" * 24, "args": "a" * 80 + f" {i}",
+        }
+        for i in range(MAX_SHOW)
+    ]
+    _assert_block_fits("journalctl", ansi.term(_render(entries, MAX_SHOW, []), limit=ansi.embed_limit()), 4096)
+
+    rows = [{"line": 99999, "content": "x" * 200} for _ in range(HISTORY_LIMIT)]
+    body = [ansi.prompt("alpha history")]
+    body += [f"  {ansi.field(r['line'], 5, C.CYAN)}  {ansi.note(r['content'])}" for r in rows]
+    _assert_block_fits("history", ansi.term(*body, limit=ansi.embed_limit()), 4096)
+
+
+async def test_message_output_capped_to_message_limit(bot):
+    """A pathological error string must not produce an over-long message."""
+    cog = System(bot)
+    bot.reload_extension = AsyncMock(side_effect=Exception("X" * 3000))
+    ctx = make_ctx(bot)
+    await cog.reload.callback(cog, ctx, "system")
+
+    _assert_block_fits("reload", ctx.send.await_args.args[0], 2000)

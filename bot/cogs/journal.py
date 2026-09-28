@@ -22,8 +22,8 @@ from collections import Counter
 import discord
 from discord.ext import commands
 
-import ansi
-from ansi import Color as C
+from bot.services import ansi
+from bot.services.ansi import Color as C
 
 JOURNAL_FILE = pathlib.Path("data/command_journal.json")
 DATABASE_FILE = "data/journal.db"
@@ -590,7 +590,7 @@ class Journal(commands.Cog, name="journal"):
         text = _render(entries, count, filters)
         embed = discord.Embed(
             title="📜  alpha journalctl",
-            description=ansi.term(text),
+            description=ansi.term(text, limit=ansi.embed_limit()),
             color=0x1ABC9C,
         )
         embed.set_footer(text="alpha journalctl [count] --<music|ai|games|…> · all commands are masked")
@@ -625,7 +625,7 @@ class Journal(commands.Cog, name="journal"):
             )
         embed = discord.Embed(
             title="📜  history",
-            description=ansi.term(*lines),
+            description=ansi.term(*lines, limit=ansi.embed_limit()),
             color=0x3498DB,
         )
         embed.set_footer(

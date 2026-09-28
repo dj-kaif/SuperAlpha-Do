@@ -205,6 +205,27 @@ async def test_purge_caps_how_many_messages_it_writes(logged):
     assert len(embeds) - 1 == welcomelogs.MAX_PURGE_LOGS
 
 
+async def test_purge_releases_cached_images_it_never_logs(logged):
+    """Bytes for messages past the cap must not sit in the cache until evicted."""
+    author = make_member(USER_IDS["member"], guild=logged.guild)
+    messages = [
+        _message(
+            logged, author, content=f"msg {i}", message_id=i, minutes_ago=100 - i,
+            attachments=[_attachment(f"p{i}.png")],
+        )
+        for i in range(40)
+    ]
+    for message in messages:
+        await logged.cog.on_message(message)
+    assert attachment_cache.stats()["messages"] == 40
+
+    await logged.cog.on_bulk_message_delete(messages)
+
+    # The 25 written out are claimed (popped and re-uploaded); the rest are
+    # discarded. Either way the purge must not leave bytes in the cache.
+    assert attachment_cache.stats() == {"messages": 0, "bytes": 0}
+
+
 async def test_purge_batches_embeds_instead_of_spamming(logged):
     author = make_member(USER_IDS["member"], guild=logged.guild)
     messages = [
@@ -361,6 +382,20 @@ async def test_cache_skips_files_over_the_size_limit(env):
     message = _message(env, author, attachments=[oversized])
 
     assert await attachment_cache.cache_message_images(message) == 0
+
+
+async def test_cache_bounds_memory_when_size_is_unreported(env):
+    """`size` can be missing, so the downloaded length is what must bound us."""
+    author = make_member(USER_IDS["member"])
+    lying = _attachment(
+        "sneaky.png",
+        b"x" * (attachment_cache.MAX_IMAGE_BYTES + 1),
+        size=1,  # claims to be tiny
+    )
+    message = _message(env, author, attachments=[lying])
+
+    assert await attachment_cache.cache_message_images(message) == 0
+    assert attachment_cache.stats()["bytes"] == 0
 
 
 async def test_cache_falls_back_to_read_on_older_discord_py(env):

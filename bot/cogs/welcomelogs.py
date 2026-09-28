@@ -172,7 +172,11 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
             return
 
         config = get_guild_config(message.guild.id)
-        if not (self._logs_on(config) and config.get("log_messages") and config.get("log_attachments")):
+        # Purges are logged under `log_purges`, not `log_messages`, so caching on
+        # `log_messages` alone would leave a purge log unable to show the
+        # picture it says it has.
+        wants_deletions = config.get("log_messages") or config.get("log_purges")
+        if not (self._logs_on(config) and wants_deletions and config.get("log_attachments")):
             return
 
         await attachment_cache.cache_message_images(message)
@@ -377,6 +381,11 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
             except Exception:
                 continue
 
+        # Messages past the cap never get logged, so hand back their cached bytes
+        # rather than leaving them to sit in the cache until they are evicted.
+        for message in logged[MAX_PURGE_LOGS:]:
+            attachment_cache.discard_message_images(message.id)
+
         try:
             await channel.send(embed=summary)
             if entries:
@@ -390,7 +399,8 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
         # before the "nothing changed" bail-out below.
         if after.attachments and after.guild and not getattr(after.author, "bot", False):
             config = get_guild_config(after.guild.id)
-            if self._logs_on(config) and config.get("log_attachments"):
+            wants_deletions = config.get("log_messages") or config.get("log_purges")
+            if self._logs_on(config) and wants_deletions and config.get("log_attachments"):
                 await attachment_cache.cache_message_images(after)
 
         if before.author.bot:

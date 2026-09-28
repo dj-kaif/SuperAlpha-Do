@@ -53,11 +53,20 @@ async def _read(attachment) -> bytes | None:
         return None
     try:
         if hasattr(attachment, "to_bytes"):
-            return await attachment.to_bytes()
-        return await attachment.read()
+            data = await attachment.to_bytes()
+        else:
+            data = await attachment.read()
     except Exception as exc:  # network hiccup, vanished file, 403 on a private one
         log.debug("attachment cache: could not read %r (%s)", attachment, exc)
         return None
+    # `size` is only a hint from the API payload and can be absent, so the
+    # downloaded length is what actually bounds memory here.
+    if not data:
+        return None
+    if len(data) > MAX_IMAGE_BYTES:
+        log.debug("attachment cache: %r is %d bytes, over the cap", attachment, len(data))
+        return None
+    return data
 
 
 def _evict() -> None:
