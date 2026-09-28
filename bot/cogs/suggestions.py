@@ -18,6 +18,7 @@ import json
 import os
 import pathlib
 import time
+from urllib.parse import urlparse
 
 import aiohttp
 import discord
@@ -520,12 +521,15 @@ class Suggestions(commands.Cog, name="suggestions"):
         repo = (config.get("gh_repo") or "").strip().strip("/")
         if target.isdigit() and repo:
             rec["gh_url"] = f"https://github.com/{repo}/issues/{target}"
-        elif "github.com" in target:
-            rec["gh_url"] = target
         else:
-            embed = self._make_embed("❌ Bad Link", 0xE74C3C, "Give a full GitHub URL or an issue number (with `repo` set).")
-            await ctx.send(embed=embed)
-            return
+            parsed = urlparse(target)
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme in {"http", "https"} and host in {"github.com", "www.github.com"}:
+                rec["gh_url"] = target
+            else:
+                embed = self._make_embed("❌ Bad Link", 0xE74C3C, "Give a full GitHub URL or an issue number (with `repo` set).")
+                await ctx.send(embed=embed)
+                return
         rec["updated_ts"] = time.time()
         self._save_rec(ctx.guild.id, rec)
         await self._refresh_board(ctx.guild.id, rec)
