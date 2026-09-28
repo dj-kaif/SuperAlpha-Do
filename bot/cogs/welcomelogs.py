@@ -4,6 +4,7 @@ cogs/welcomelogs.py — Welcome messages and server logging.
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 
 import discord
@@ -11,11 +12,41 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.cogs.checks import perms_or_developer
+from bot.services import attachment_cache
 
 
 DATA_DIR = "data/welcomelogs"
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 os.makedirs(DATA_DIR, exist_ok=True)
+
+#: A purge can remove up to 500 messages, so the log is summarised and only the
+#: first ``MAX_PURGE_LOGS`` are written out in full.
+MAX_PURGE_LOGS = 25
+EMBEDS_PER_LOG_MESSAGE = 5
+FILES_PER_LOG_MESSAGE = 10
+
+#: How long a purge note stays valid, so a client-side bulk delete happening
+#: seconds later is not attributed to the wrong moderator.
+PURGE_NOTE_TTL = 30.0
+
+_DEFAULT_CONFIG = {
+    "welcome_channel": None,
+    "welcome_message": "Welcome {user} to {server}!",
+    "welcome_enabled": False,
+    "logs_channel": None,
+    "logs_enabled": False,
+    "log_messages": True,
+    "log_joins": True,
+    "log_leaves": True,
+    "log_roles": True,
+    "log_bans": True,
+    "log_edits": True,
+    "log_purges": True,
+    "log_attachments": True,
+}
+
+#: (guild_id, channel_id) -> (moderator, expiry) for the purge in flight.
+_recent_purges: dict[tuple[int, int], tuple[object, float]] = {}
 
 
 def load_config() -> dict:
@@ -31,20 +62,36 @@ def save_config(config: dict) -> None:
 
 
 def get_guild_config(guild_id: int) -> dict:
+    """Saved config for a guild, filled in from the defaults.
+
+    The saved blob is merged over the defaults rather than only being defaulted
+    for unknown guilds, so toggles added later (purges, attachments) start
+    working on servers that were configured before they existed.
+    """
     config = load_config()
-    return config.get(str(guild_id), {
-        "welcome_channel": None,
-        "welcome_message": "Welcome {user} to {server}!",
-        "welcome_enabled": False,
-        "logs_channel": None,
-        "logs_enabled": False,
-        "log_messages": True,
-        "log_joins": True,
-        "log_leaves": True,
-        "log_roles": True,
-        "log_bans": True,
-        "log_edits": True,
-    })
+    return {**_DEFAULT_CONFIG, **config.get(str(guild_id), {})}
+
+
+def note_purge(guild, channel, moderator) -> None:
+    """Record who is about to purge *channel* so the log can name them.
+
+    Called by the purge commands just before they delete. Client-side bulk
+    deletes never get here, which is how the log tells the two apart.
+    """
+    now = time.monotonic()
+    for key, (_, expiry) in list(_recent_purges.items()):
+        if expiry < now:
+            del _recent_purges[key]
+    _recent_purges[(guild.id, channel.id)] = (moderator, now + PURGE_NOTE_TTL)
+
+
+def _consume_purge_note(guild_id: int, channel_id: int):
+    """Pop the moderator who triggered a purge here, if it was one of ours."""
+    entry = _recent_purges.pop((guild_id, channel_id), None)
+    if entry is None:
+        return None
+    moderator, expiry = entry
+    return moderator if time.monotonic() <= expiry else None
 
 
 def save_guild_config(guild_id: int, guild_config: dict) -> None:
@@ -63,6 +110,72 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
         if description:
             embed.description = description
         return embed
+
+    def _logs_on(self, config: dict) -> bool:
+        """True when this guild has somewhere to send logs."""
+        return bool(config.get("logs_enabled") and config.get("logs_channel"))
+
+    def _log_channel(self, guild, config: dict):
+        return guild.get_channel(config["logs_channel"]) if self._logs_on(config) else None
+
+    def _deleted_message_embed(self, message: discord.Message, title: str = "Message Deleted") -> discord.Embed:
+        """Log entry for one removed message, shared by single and bulk deletes."""
+        description = message.content[:1024] if message.content else "*No text content*"
+        embed = discord.Embed(color=0xE74C3C, description=description, timestamp=datetime.now(timezone.utc))
+        embed.set_author(name=title, icon_url=message.author.display_avatar.url)
+        embed.add_field(name="Author", value=f"{message.author} ({message.author.id})", inline=False)
+        embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+        embed.add_field(name="Message ID", value=message.id, inline=True)
+        if message.attachments:
+            embed.add_field(name="Attachments", value=f"{len(message.attachments)} file(s)", inline=True)
+        return embed
+
+    def _claim_images(self, message: discord.Message, config: dict) -> list[discord.File]:
+        """Take a deleted message's cached pictures, or drop them if disabled.
+
+        Returns fresh ``discord.File`` objects; the caller points the embed's
+        image at the first one with an ``attachment://`` URL.
+        """
+        if config.get("log_attachments"):
+            return attachment_cache.to_files(attachment_cache.pop_message_images(message.id))
+        attachment_cache.discard_message_images(message.id)
+        return []
+
+    async def _send_deleted_logs(self, channel, entries: list[tuple[discord.Embed, list[discord.File]]]) -> None:
+        """Send log entries in batches that respect Discord's per-message limits."""
+        batch_embeds: list[discord.Embed] = []
+        batch_files: list[discord.File] = []
+
+        for embed, files in entries:
+            too_many_embeds = len(batch_embeds) >= EMBEDS_PER_LOG_MESSAGE
+            too_many_files = batch_files and len(batch_files) + len(files) > FILES_PER_LOG_MESSAGE
+            if batch_embeds and (too_many_embeds or too_many_files):
+                await channel.send(embeds=batch_embeds, files=batch_files or None)
+                batch_embeds, batch_files = [], []
+            batch_embeds.append(embed)
+            batch_files.extend(files)
+
+        if batch_embeds:
+            await channel.send(embeds=batch_embeds, files=batch_files or None)
+
+    def cog_unload(self) -> None:
+        attachment_cache.clear()
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Stash image bytes while the attachments still exist on the CDN.
+
+        Without this the pictures are unrecoverable by the time the message is
+        deleted, so the log channel could only ever say "1 file(s)".
+        """
+        if message.guild is None or not message.attachments or getattr(message.author, "bot", False):
+            return
+
+        config = get_guild_config(message.guild.id)
+        if not (self._logs_on(config) and config.get("log_messages") and config.get("log_attachments")):
+            return
+
+        await attachment_cache.cache_message_images(message)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
@@ -184,29 +297,102 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
 
         config = get_guild_config(message.guild.id)
 
-        if not config.get("logs_enabled") or not config.get("logs_channel"):
+        if not self._logs_on(config):
             return
         if not config.get("log_messages"):
             return
 
-        channel = message.guild.get_channel(config["logs_channel"])
+        channel = self._log_channel(message.guild, config)
         if not channel:
             return
 
         try:
-            embed = discord.Embed(color=0xE74C3C, description=message.content[:1024] if message.content else "*No text content*", timestamp=datetime.now(timezone.utc))
-            embed.set_author(name="Message Deleted", icon_url=message.author.display_avatar.url)
-            embed.add_field(name="Author", value=f"{message.author} ({message.author.id})", inline=False)
-            embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-            embed.add_field(name="Message ID", value=message.id, inline=True)
-            if message.attachments:
-                embed.add_field(name="Attachments", value=f"{len(message.attachments)} file(s)", inline=True)
-            await channel.send(embed=embed)
+            embed = self._deleted_message_embed(message)
+            files = self._claim_images(message, config)
+            if files:
+                embed.set_image(url=f"attachment://{files[0].filename}")
+            await channel.send(embed=embed, files=files or None)
+        except Exception:
+            pass
+
+    @commands.Cog.listener()
+    async def on_bulk_message_delete(self, messages: list[discord.Message]) -> None:
+        """Log a whole purge (or client-side bulk delete) to the log channel.
+
+        Discord fires this instead of one ``on_message_delete`` per message, so
+        without it every purge — including moderators clearing messages from the
+        Discord app itself — left no trace at all.
+        """
+        if not messages:
+            return
+
+        guild = messages[0].guild
+        if guild is None:
+            return
+
+        config = get_guild_config(guild.id)
+        if not self._logs_on(config) or not config.get("log_purges"):
+            return
+
+        channel = self._log_channel(guild, config)
+        if not channel:
+            return
+
+        purged = sorted(messages, key=lambda message: message.created_at)
+        moderator = _consume_purge_note(guild.id, purged[0].channel.id)
+        logged = [m for m in purged if not getattr(m.author, "bot", False)]
+        bot_count = len(purged) - len(logged)
+
+        summary = discord.Embed(
+            color=0x95A5A6,
+            timestamp=datetime.now(timezone.utc),
+            description=f"{len(purged)} message(s) removed from {purged[0].channel.mention}.",
+        )
+        summary.set_author(name="Messages Purged")
+        summary.add_field(name="Channel", value=purged[0].channel.mention, inline=True)
+        summary.add_field(
+            name="Purged by",
+            value=str(moderator) if moderator else "Unknown (client-side bulk delete)",
+            inline=True,
+        )
+        if bot_count:
+            summary.add_field(name="Bot messages", value=f"{bot_count} skipped", inline=True)
+
+        shown = logged[:MAX_PURGE_LOGS]
+        if len(shown) < len(logged):
+            summary.add_field(
+                name="Note",
+                value=f"Showing the first {MAX_PURGE_LOGS} of {len(logged)} — the rest were not logged.",
+                inline=False,
+            )
+
+        entries: list[tuple[discord.Embed, list[discord.File]]] = []
+        for message in shown:
+            try:
+                embed = self._deleted_message_embed(message, title="Purged Message")
+                files = self._claim_images(message, config)
+                if files:
+                    embed.set_image(url=f"attachment://{files[0].filename}")
+                entries.append((embed, files))
+            except Exception:
+                continue
+
+        try:
+            await channel.send(embed=summary)
+            if entries:
+                await self._send_deleted_logs(channel, entries)
         except Exception:
             pass
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        # An edit can be the first time a picture appears on a message, so cache
+        # before the "nothing changed" bail-out below.
+        if after.attachments and after.guild and not getattr(after.author, "bot", False):
+            config = get_guild_config(after.guild.id)
+            if self._logs_on(config) and config.get("log_attachments"):
+                await attachment_cache.cache_message_images(after)
+
         if before.author.bot:
             return
         if not before.guild:
@@ -325,7 +511,7 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
         embed = discord.Embed(color=0x2ECC71)
         embed.set_author(name="✅ Logging Setup Complete")
         embed.description = f"Logs will be sent to {channel.mention}"
-        embed.add_field(name="Enabled Events", value="Messages, Joins, Leaves, Roles, Bans, Edits", inline=False)
+        embed.add_field(name="Enabled Events", value="Messages, Joins, Leaves, Roles, Bans, Edits, Purges", inline=False)
         await ctx.send(embed=embed)
 
     @commands.command(name="logdisable")

@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.cogs.checks import perms_or_developer
+from bot.cogs.welcomelogs import note_purge
 
 
 _warnings: dict[int, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
@@ -273,6 +274,7 @@ class Moderation(commands.Cog, name="moderation"):
             embed = self._make_embed("❌ Purge Failed", 0xE74C3C, "Amount must be between 1 and 500")
             await ctx.send(embed=embed)
             return
+        note_purge(ctx.guild, ctx.channel, ctx.author)
         deleted = await ctx.channel.purge(limit=amount + 1)
         embed = self._make_embed("🗑️ Messages Purged", 0x95A5A6)
         embed.add_field(name="Deleted", value=f"**{len(deleted) - 1}** message(s)", inline=True)
@@ -444,6 +446,7 @@ class Moderation(commands.Cog, name="moderation"):
         if not 1 <= amount <= 500:
             await interaction.response.send_message("Amount must be between 1 and 500.")
             return
+        note_purge(interaction.guild, interaction.channel, interaction.user)
         deleted = await interaction.channel.purge(limit=amount)
         embed = self._make_embed("🗑️ Messages Purged", 0x95A5A6)
         embed.add_field(name="Deleted", value=f"**{len(deleted)}** message(s)", inline=True)

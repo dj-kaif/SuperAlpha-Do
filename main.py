@@ -15,6 +15,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
+import ansi
 from bot.cogs.linux import apply_linux_aliases
 from bot.config.settings import BANNED_GUILDS, BANNED_USERS
 from bot.core.bot import get_prefix, make_bot
@@ -320,11 +321,11 @@ async def _suggest_command(ctx: commands.Context, invoked: str) -> None:
 
     prompt = f"Did you mean: `{candidates[0]}`? (y / n / hint)"
     body_lines = [
-        f"$ {prefix} {invoked}",
-        f"bash: `{invoked}`: command not found",
-        prompt,
+        ansi.prompt(f"{prefix} {invoked}"),
+        f"{ansi.err('bash:')} {ansi.value(invoked)}: {ansi.err('command not found')}",
+        ansi.note(prompt),
     ]
-    body = "```bash\n" + "\n".join(body_lines) + "\n```"
+    body = ansi.term(*body_lines)
 
     def make_check(allow_numbers: bool = False):
         choices = {"y", "yes", "n", "no", "hint", "cancel"}
@@ -365,14 +366,14 @@ async def _suggest_command(ctx: commands.Context, invoked: str) -> None:
         return
     if choice == "hint":
         hint_lines = [
-            f"$ {prefix} {invoked}",
-            f"bash: {invoked}: command not found",
-            "Did you mean one of:",
+            ansi.prompt(f"{prefix} {invoked}"),
+            f"{ansi.err('bash:')} {ansi.value(invoked)}: {ansi.err('command not found')}",
+            ansi.label("Did you mean one of:"),
         ]
         for i, name in enumerate(candidates, 1):
-            hint_lines.append(f"  {i}. {name}")
-        hint_lines.append("(reply 1-3, y / n / cancel)")
-        hint_body = "```bash\n" + "\n".join(hint_lines) + "\n```"
+            hint_lines.append(f"  {ansi.value(f'{i}.')} {ansi.plain(name)}")
+        hint_lines.append(ansi.note("(reply 1-3, y / n / cancel)"))
+        hint_body = ansi.term(*hint_lines)
         await edit(msg, hint_body)
         answer = await wait_answer(make_check(allow_numbers=True), timeout=30.0)
         if answer is None:

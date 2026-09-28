@@ -22,6 +22,9 @@ from collections import Counter
 import discord
 from discord.ext import commands
 
+import ansi
+from ansi import Color as C
+
 JOURNAL_FILE = pathlib.Path("data/command_journal.json")
 DATABASE_FILE = "data/journal.db"
 MAX_ENTRIES = 400
@@ -461,11 +464,11 @@ def _render(entries: list[dict], count: int, filters: list[str]) -> str:
         entries = [e for e in entries if e.get("cog") in matched]
     servers = len({e.get("gid") for e in entries if e.get("gid")})
     fmt_filters = " ".join(f"--{f}" for f in filters) or "--all"
-    lines = [f"$ alpha journalctl {fmt_filters}"]
-    lines.append(
+    lines = [ansi.prompt(f"alpha journalctl {fmt_filters}")]
+    lines.append(ansi.note(
         f"-- last {min(count, len(entries))} of {len(entries)} "
         f"· {servers} server{'s' if servers != 1 else ''} --"
-    )
+    ))
     for e in entries[-count:]:
         when = time.strftime("%H:%M:%S", time.localtime(e.get("ts") or 0))
         if (e.get("ts") or 0) and time.strftime(
@@ -476,11 +479,19 @@ def _render(entries: list[dict], count: int, filters: list[str]) -> str:
         user = (e.get("user") or "?")[:12]
         cog = (e.get("cog") or "?")[:4].upper()
         kind = "alpha " if e.get("kind") == "sudo" else "slash"
+        args = _format_args(e)
+        # The args column is the only unbounded one, so it absorbs the cap that
+        # keeps the row at 104 visible characters. Clipping after colouring
+        # would risk slicing a colour span in half.
+        fixed = len(when) + 2 + 12 + 1 + 12 + 1 + 11 + 1 + 6 + 5 + 1 + 24 + 1
+        args = args[: max(1, 104 - fixed)]
         line = (
-            f"{when}  {guild:<12} {user:<12} {e.get('uid', '????'):<11} "
-            f"{kind:<6}{cog:<5} {e.get('cmd', '?'):<24} {_format_args(e)}"
+            f"{ansi.note(when)}  {ansi.field(guild, 12, C.CYAN)} "
+            f"{ansi.field(user, 12, C.WHITE)} {ansi.field(e.get('uid', '????'), 11, C.WHITE)} "
+            f"{ansi.field(kind, 6, C.CYAN)}{ansi.field(cog, 5, C.BOLD, C.WHITE)} "
+            f"{ansi.field(e.get('cmd', '?'), 24, C.BOLD, C.WHITE)} {ansi.note(args)}"
         )
-        lines.append(line[:104])
+        lines.append(line)
     if filters and "all" not in filters:
         matched = set()
         for f in filters:
@@ -492,10 +503,10 @@ def _render(entries: list[dict], count: int, filters: list[str]) -> str:
         counts = Counter(e.get("root", "?") for e in today_entries)
         if counts:
             top = "   ".join(f"{name} ×{n}" for name, n in counts.most_common(8))
-            lines.append("-- summary (today) --")
+            lines.append(ansi.note("-- summary (today) --"))
             lines.append(top[:104])
         else:
-            lines.append("-- summary (today): no activity --")
+            lines.append(ansi.note("-- summary (today): no activity --"))
     return "\n".join(lines)
 
 
@@ -579,7 +590,7 @@ class Journal(commands.Cog, name="journal"):
         text = _render(entries, count, filters)
         embed = discord.Embed(
             title="📜  alpha journalctl",
-            description=f"```bash\n{text}\n```",
+            description=ansi.term(text),
             color=0x1ABC9C,
         )
         embed.set_footer(text="alpha journalctl [count] --<music|ai|games|…> · all commands are masked")
@@ -607,12 +618,14 @@ class Journal(commands.Cog, name="journal"):
             )
             await ctx.send(embed=embed)
             return
-        lines = ["$ history"]
+        lines = [ansi.prompt(f"{prefix} history")]
         for entry in rows:
-            lines.append(f"  {entry['line']:>5}  {entry['content']}")
+            lines.append(
+                f"  {ansi.field(entry['line'], 5, C.CYAN)}  {ansi.note(entry['content'])}"
+            )
         embed = discord.Embed(
             title="📜  history",
-            description=f"```bash\n{chr(10).join(lines)}\n```",
+            description=ansi.term(*lines),
             color=0x3498DB,
         )
         embed.set_footer(

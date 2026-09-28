@@ -8,6 +8,7 @@ points every persistence path at a throwaway tmp directory.
 from __future__ import annotations
 
 import pathlib
+import re
 import shutil
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,13 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text: str) -> str:
+    """Drop ANSI colour codes so assertions can look at the visible text."""
+    return _ANSI_RE.sub("", text)
 
 GUILD_ID = 1001
 TEXT_CHANNEL_ID = 2001

@@ -20,7 +20,21 @@ from bot.config.settings import INVITE_URL, OWNER_HANDLE, SUPPORT_SERVER
 from bot.services.git_ops import GIT_REPO, _gh_issue, _gh_pr, _git_date, _latest_commits, _local_head, _local_latest
 from bot.services.host_health import START_TIME, _bar, _bot_age, _cpu_usage, _load_avg, _mem_info, _task_count
 from bot.services.man_search import ManSearchView, ManView, _make_man_embed, _search_commands
+import ansi
 from ansi import Color as C, c
+
+
+_STATE_COLORS = {
+    "▶": (C.BOLD, C.GREEN),
+    "⏸": (C.BOLD, C.YELLOW),
+    "□": (C.WHITE,),
+    "·": (C.WHITE,),
+}
+
+
+def _state_color(state: str) -> tuple:
+    return _STATE_COLORS.get(state, (C.WHITE,))
+
 
 class System(commands.Cog, name="system"):
     """Core system commands (ping, uptime, man, reload, shutdown)."""
@@ -42,25 +56,19 @@ class System(commands.Cog, name="system"):
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def ping(self, ctx: commands.Context) -> None:
         """Check bot latency. Usage: alpha ping"""
-        import time as _t
-        before = _t.monotonic()
-        msg = await ctx.send("```bash\n$ alpha ping discord.com\nPinging…\n```")
-        rtt = round((_t.monotonic() - before) * 1000)
+        before = time.monotonic()
+        msg = await ctx.send(ansi.term(ansi.prompt("alpha ping discord.com"), "Pinging…"))
+        rtt = round((time.monotonic() - before) * 1000)
         ws  = self._ws_ms()
-        await msg.edit(content=(
-            f"```ansi\n"
-            f"{c(C.BOLD, C.WHITE, '$')} "
-            f"{c(C.BOLD, C.CYAN, 'alpha ping discord.com')}\n"
-            
-            f"{c(C.BOLD, C.WHITE, 'PING')} {c(C.CYAN, 'discord.com:')} {c(C.WHITE, '(64 bytes)')}\n\n"
-            
-            f"{c(C.WHITE, 'icmp_seq:')} {c(C.WHITE, '1')}\n"
-    
-            f"{c(C.CYAN, 'ws:')} {c(C.BOLD, C.YELLOW, '158 ms')}\n"
+        await msg.edit(content=ansi.term(
+            ansi.prompt("alpha ping discord.com"),
+            f"{ansi.value('PING')} {ansi.label('discord.com:')} {ansi.note('(64 bytes)')}",
+            "",
+            f"{ansi.note('icmp_seq:')} {ansi.note('1')}",
+            f"{ansi.label('ws:')} {ansi.latency(ws)}",
+            f"{ansi.label('rtt:')} {ansi.latency(rtt)}",
+        ))
 
-            f"{c(C.YELLOW, 'rtt:')} {c(C.BOLD, C.RED, '1009 ms')}\n```"
-))
-        
     # ── latency ───────────────────────────────────────────────────────────────
     @commands.command(name="latency", aliases=["lag", "netstat"])
     async def latency(self, ctx: commands.Context) -> None:
@@ -69,10 +77,12 @@ class System(commands.Cog, name="system"):
         bar_filled = min(int(ws / 10), 20)
         bar = "█" * bar_filled + "░" * (20 - bar_filled)
         quality = "excellent" if ws < 80 else "good" if ws < 150 else "poor"
-        await ctx.send(
-            f"```bash\n$ alpha latency\n"
-            f"WebSocket: {ws} ms  [{bar}]  {quality}\n```"
-        )
+        bar_pct = bar_filled / 20 * 100
+        await ctx.send(ansi.term(
+            ansi.prompt("alpha latency"),
+            f"{ansi.label('WebSocket:')} {ansi.latency(ws)}  "
+            f"{c(*ansi.level(bar_pct), bar)}  {ansi.quality(quality)}",
+        ))
 
     # ── uptime ────────────────────────────────────────────────────────────────
     @commands.command(name="uptime", aliases=["up"])
@@ -83,10 +93,11 @@ class System(commands.Cog, name="system"):
         hours, rem = divmod(rem, 3600)
         mins, secs = divmod(rem, 60)
         uptime_str = f"{days}d {hours:02d}:{mins:02d}:{secs:02d}"
-        await ctx.send(
-            f"```bash\n$ uptime\n"
-            f" up {uptime_str},  1 user,  load average: 0.01, 0.01, 0.00\n```"
-        )
+        await ctx.send(ansi.term(
+            ansi.prompt("uptime"),
+            f" {ansi.label('up')} {ansi.value(uptime_str)},  {ansi.plain('1 user,  load average:')} "
+            f"{ansi.note('0.01, 0.01, 0.00')}",
+        ))
 
     # ── git / latest push ────────────────────────────────────────────────────
     @commands.command(name="git", aliases=["push", "changelog", "latest"])
@@ -199,10 +210,11 @@ class System(commands.Cog, name="system"):
         """Look up a GitHub issue by number. Usage: alpha issue <number>"""
         item = await _gh_issue(number)
         if item is None:
-            await ctx.send(
-                f"```bash\n$ alpha issue {number}\n"
-                f"Resource not found or GitHub unreachable (github.com/{GIT_REPO}).\n```"
-            )
+            await ctx.send(ansi.term(
+                ansi.prompt(f"alpha issue {number}"),
+                f"{ansi.err('Resource not found')} or GitHub unreachable "
+                f"{ansi.note(f'(github.com/{GIT_REPO})')}",
+            ))
             return
         await ctx.send(embed=self._gh_item_embed(item, "issues"))
 
@@ -211,10 +223,11 @@ class System(commands.Cog, name="system"):
         """Look up a GitHub pull request by number. Usage: alpha pr <number>"""
         item = await _gh_pr(number)
         if item is None:
-            await ctx.send(
-                f"```bash\n$ alpha pr {number}\n"
-                f"Resource not found or GitHub unreachable (github.com/{GIT_REPO}).\n```"
-            )
+            await ctx.send(ansi.term(
+                ansi.prompt(f"alpha pr {number}"),
+                f"{ansi.err('Resource not found')} or GitHub unreachable "
+                f"{ansi.note(f'(github.com/{GIT_REPO})')}",
+            ))
             return
         await ctx.send(embed=self._gh_item_embed(item, "pulls"))
 
@@ -232,11 +245,12 @@ class System(commands.Cog, name="system"):
 
             results = _search_commands(self.bot, command_name)
             if not results:
-                await ctx.send(
-                    f"```bash\nNo manual entry for {command_name}\n"
-                    "Tip: try related words or the command's purpose, e.g. 'music', 'give role', 'xp'\n"
-                    "or run 'man' to list everything.\n```"
-                )
+                await ctx.send(ansi.term(
+                    f"{ansi.err('alpha:')} No manual entry for {ansi.value(command_name)}",
+                    f"{ansi.warn('Tip:')} try related words or the command's purpose, "
+                    f"e.g. {ansi.plain('music, give role, xp')}",
+                    f"or run {ansi.value('man')} to list everything.",
+                ))
                 return
 
             top_score = results[0][0]
@@ -323,7 +337,7 @@ class System(commands.Cog, name="system"):
     @commands.cooldown(1, 45, commands.BucketType.channel)
     async def htop(self, ctx: commands.Context) -> None:
         """Live terminal-style health dashboard. Usage: alpha htop"""
-        desc = "```bash\n" + self._htop_block(ctx) + "\n```"
+        desc = self._htop_block(ctx)
         embed = discord.Embed(title="🖥️  htop — live dashboard", description=desc, color=0x1ABC9C)
         embed.set_footer(text="Live refresh · react ⏹ to stop")
         msg = await ctx.send(embed=embed)
@@ -357,7 +371,7 @@ class System(commands.Cog, name="system"):
                 if stop.is_set():
                     return
                 try:
-                    desc = "```bash\n" + self._htop_block(ctx) + "\n```"
+                    desc = self._htop_block(ctx)
                     embed = discord.Embed(
                         title="🖥️  htop — live dashboard",
                         description=desc,
@@ -383,18 +397,28 @@ class System(commands.Cog, name="system"):
         mem = _mem_info()
 
         bot_name = _journal._clean(getattr(self.bot.user, "name", None) or "alpha")[:14]
-        lines = ["$ alpha htop"]
+        lines = [ansi.prompt("alpha htop")]
         lines.append(
-            f"{bot_name:<22} up {_bot_age():<16} "
-            f"Tasks: {tasks if tasks is not None else 'n/a'}"
+            f"{ansi.field(bot_name, 22, C.BOLD, C.CYAN)} "
+            f"{ansi.label('up')} {ansi.field(_bot_age(), 16, C.WHITE)} "
+            f"{ansi.label('Tasks:')} {ansi.value(tasks if tasks is not None else 'n/a')}"
         )
-        lines.append(f"load avg: {_load_avg()}  ({core_count} core{'s' if core_count != 1 else ''})")
-        lines.append(f"CPU {_bar(cpu_pct)} {cpu}")
+        plural = "core" if core_count == 1 else "cores"
+        lines.append(
+            f"{ansi.label('load avg:')} {ansi.value(_load_avg())}  "
+            f"{ansi.note(f'({core_count} {plural})')}"
+        )
+        lines.append(
+            f"{ansi.label('CPU')} {c(*ansi.level(cpu_pct), _bar(cpu_pct))} {ansi.value(cpu)}"
+        )
         if mem:
             total_g, used_g = mem[0] / 2**30, mem[1] / 2**30
-            lines.append(f"MEM {_bar(mem[2])} {used_g:.1f}G / {total_g:.1f}G ({mem[2]:.0f}%)")
+            lines.append(
+                f"{ansi.label('MEM')} {c(*ansi.level(mem[2]), _bar(mem[2]))} "
+                f"{ansi.value(f'{used_g:.1f}G / {total_g:.1f}G')} {ansi.note(f'({mem[2]:.0f}%)')}"
+            )
         else:
-            lines.append("MEM n/a")
+            lines.append(f"{ansi.label('MEM')} {ansi.warn('n/a')}")
 
         lines.append("─" * 44)
         guild = ctx.guild
@@ -404,14 +428,21 @@ class System(commands.Cog, name="system"):
             bots = sum(1 for m in members if m.bot)
             voice_users = sum(len(ch.members) for ch in guild.voice_channels)
             voice_ch = sum(1 for ch in guild.voice_channels if ch.members)
-            lines.append(f"GUILD {_journal._clean(guild.name)[:26]} — {guild.member_count:,} members")
             lines.append(
-                f"      online {online:,} · bots {bots:,} · voice {voice_users} "
-                f"({voice_ch} ch) · text {len(guild.text_channels)} · "
-                f"vc {len(guild.voice_channels)} · boost Lv{guild.premium_tier}"
+                f"{ansi.label('GUILD')} {ansi.value(_journal._clean(guild.name)[:26])} "
+                f"{ansi.note('—')} {ansi.plain(f'{guild.member_count:,}')} {ansi.note('members')}"
+            )
+            lines.append(
+                f"      {ansi.label('online')} {ansi.plain(f'{online:,}')} · "
+                f"{ansi.label('bots')} {ansi.plain(f'{bots:,}')} · "
+                f"{ansi.label('voice')} {ansi.plain(str(voice_users))} "
+                f"{ansi.note(f'({voice_ch} ch)')} · {ansi.label('text')} "
+                f"{ansi.plain(str(len(guild.text_channels)))} · {ansi.label('vc')} "
+                f"{ansi.plain(str(len(guild.voice_channels)))} · "
+                f"{ansi.label('boost')} {ansi.plain('Lv' + str(guild.premium_tier))}"
             )
         else:
-            lines.append("GUILD — (direct message)")
+            lines.append(f"{ansi.label('GUILD')} {ansi.note('— (direct message)')}")
 
         today = time.strftime("%Y-%m-%d")
         try:
@@ -426,25 +457,32 @@ class System(commands.Cog, name="system"):
         if not math.isfinite(latency):
             latency = 0.0
         lines.append(
-            f"BOT   {round(latency * 1000)}ms · {len(self.bot.guilds)} guilds · "
-            f"{cmds_today} cmds today · py {platform.python_version()}"
+            f"{ansi.field('BOT', 3, C.CYAN)}   {ansi.latency(round(latency * 1000))} · "
+            f"{ansi.label('guilds')} {ansi.plain(str(len(self.bot.guilds)))} · "
+            f"{ansi.label('cmds today')} {ansi.plain(str(cmds_today))} · "
+            f"{ansi.label('py')} {ansi.note(platform.python_version())}"
         )
 
         lines.append("─" * 44)
-        lines.append(f"{'':<14} {'':<3} {'':<10} PROCESSES")
+        lines.append(f"{'':<14} {'':<3} {'':<10} {ansi.value('PROCESSES')}")
         proc = self._htop_process_rows()
         if proc:
             lines.extend(proc)
         else:
-            lines.append("(nothing running)")
+            lines.append(f"{ansi.note('(nothing running)')}")
 
-        return "\n".join(line[:104] for line in lines)
+        return ansi.term(*(ansi.clip(line, 104) for line in lines))
 
     def _htop_process_rows(self) -> list[str]:
         rows: list[str] = []
 
         def row(left: str, state: str, cmd: str, args: str) -> str:
-            return f"{left:<14} {state:<3} {cmd:<10} {args[:40]}"
+            return (
+                f"{ansi.field(left, 14, C.CYAN)} "
+                f"{ansi.field(state, 3, *_state_color(state))} "
+                f"{ansi.field(cmd, 10, C.BOLD, C.WHITE)} "
+                f"{ansi.note(args[:40])}"
+            )
 
         music = self.bot.get_cog("music")
         if music:
@@ -494,7 +532,10 @@ class System(commands.Cog, name="system"):
             title="🐧 Add SuperAlpha Do to your server",
             description=(
                 f"🔗 [Click to invite SuperAlpha Do]({INVITE_URL})\n"
-                "```bash\n$ alpha invite\nInvite URL generated.\n```"
+                + ansi.term(
+                    ansi.prompt("alpha invite"),
+                    ansi.ok("Invite URL generated."),
+                )
             ),
             color=0x2ECC71,
         )
@@ -518,9 +559,14 @@ class System(commands.Cog, name="system"):
         ext = f"bot.cogs.{cog}"
         try:
             await self.bot.reload_extension(ext)
-            await ctx.send(f"```bash\n$ alpha reload {cog}\nModule '{ext}' reloaded successfully.\n```")
+            await ctx.send(ansi.term(
+                ansi.prompt(f"alpha reload {cog}"),
+                f"{ansi.ok('Module')} {ansi.value(repr(ext))} {ansi.ok('reloaded successfully.')}",
+            ))
         except Exception as exc:
-            await ctx.send(f"```bash\nalpha: reload: {exc}\n```")
+            await ctx.send(ansi.term(
+                f"{ansi.err('alpha:')} reload: {ansi.note(str(exc))}",
+            ))
 
     # ── loadcog ───────────────────────────────────────────────────────────────
     @commands.command(name="loadcog", hidden=True)
@@ -530,9 +576,14 @@ class System(commands.Cog, name="system"):
         ext = f"bot.cogs.{cog}"
         try:
             await self.bot.load_extension(ext)
-            await ctx.send(f"```bash\n$ alpha loadcog {cog}\nModule '{ext}' loaded.\n```")
+            await ctx.send(ansi.term(
+                ansi.prompt(f"alpha loadcog {cog}"),
+                f"{ansi.ok('Module')} {ansi.value(repr(ext))} {ansi.ok('loaded.')}",
+            ))
         except Exception as exc:
-            await ctx.send(f"```bash\nalpha: loadcog: {exc}\n```")
+            await ctx.send(ansi.term(
+                f"{ansi.err('alpha:')} loadcog: {ansi.note(str(exc))}",
+            ))
 
     # ── unloadcog ─────────────────────────────────────────────────────────────
     @commands.command(name="unloadcog", hidden=True)
@@ -540,24 +591,31 @@ class System(commands.Cog, name="system"):
     async def unloadcog(self, ctx: commands.Context, cog: str) -> None:
         """[Owner] Unload a cog. Usage: alpha unloadcog <cog>"""
         if cog == "system":
-            await ctx.send("```bash\nalpha: unloadcog: cannot unload system cog\n```")
+            await ctx.send(ansi.term(
+                f"{ansi.err('alpha:')} unloadcog: cannot unload system cog",
+            ))
             return
         ext = f"bot.cogs.{cog}"
         try:
             await self.bot.unload_extension(ext)
-            await ctx.send(f"```bash\n$ alpha unloadcog {cog}\nModule '{ext}' unloaded.\n```")
+            await ctx.send(ansi.term(
+                ansi.prompt(f"alpha unloadcog {cog}"),
+                f"{ansi.ok('Module')} {ansi.value(repr(ext))} {ansi.ok('unloaded.')}",
+            ))
         except Exception as exc:
-            await ctx.send(f"```bash\nalpha: unloadcog: {exc}\n```")
+            await ctx.send(ansi.term(
+                f"{ansi.err('alpha:')} unloadcog: {ansi.note(str(exc))}",
+            ))
 
     # ── shutdown ──────────────────────────────────────────────────────────────
     @commands.command(name="shutdown", aliases=["halt", "poweroff"], hidden=True)
     @commands.is_owner()
     async def shutdown(self, ctx: commands.Context) -> None:
         """Gracefully shut down the bot. Usage: alpha shutdown"""
-        await ctx.send(
-            "```bash\n$ alpha shutdown now\n"
-            "Broadcast message: The system is going down NOW!\n```"
-        )
+        await ctx.send(ansi.term(
+            ansi.prompt("alpha shutdown now"),
+            f"{ansi.warn('Broadcast message: The system is going down NOW!')}",
+        ))
         await self.bot.close()
 
     # ── Slash Commands ────────────────────────────────────────────────────────
@@ -567,13 +625,16 @@ class System(commands.Cog, name="system"):
         """Slash command version of ping."""
         import time as _t
         before = _t.monotonic()
-        await interaction.response.send_message("```bash\n$ alpha ping discord.com\nPinging…\n```")
+        await interaction.response.send_message(
+            ansi.term(ansi.prompt("alpha ping discord.com"), "Pinging…")
+        )
         rtt = round((_t.monotonic() - before) * 1000)
         ws = self._ws_ms()
-        await interaction.edit_original_response(content=(
-            f"```bash\n$ alpha ping discord.com\n"
-            f"PING discord.com: 64 bytes\n"
-            f"icmp_seq=1  ws={ws} ms  rtt={rtt} ms\n```"
+        await interaction.edit_original_response(content=ansi.term(
+            ansi.prompt("alpha ping discord.com"),
+            f"{ansi.value('PING')} {ansi.label('discord.com:')} {ansi.note('64 bytes')}",
+            f"{ansi.label('icmp_seq=')}{ansi.note('1')}  {ansi.label('ws=')}{ansi.latency(ws)}  "
+            f"{ansi.label('rtt=')}{ansi.latency(rtt)}",
         ))
 
     @app_commands.command(name="uptime", description="Show how long the bot has been running")
@@ -584,10 +645,11 @@ class System(commands.Cog, name="system"):
         hours, rem = divmod(rem, 3600)
         mins, secs = divmod(rem, 60)
         uptime_str = f"{days}d {hours:02d}:{mins:02d}:{secs:02d}"
-        await interaction.response.send_message(
-            f"```bash\n$ uptime\n"
-            f" up {uptime_str},  1 user,  load average: 0.01, 0.01, 0.00\n```"
-        )
+        await interaction.response.send_message(ansi.term(
+            ansi.prompt("uptime"),
+            f" {ansi.label('up')} {ansi.value(uptime_str)},  "
+            f"{ansi.plain('1 user,  load average:')} {ansi.note('0.01, 0.01, 0.00')}",
+        ))
 
     @app_commands.command(name="status", description="Display bot system status")
     async def slash_status(self, interaction: discord.Interaction) -> None:
@@ -622,7 +684,10 @@ class System(commands.Cog, name="system"):
             title="🐧 Add SuperAlpha Do to your server",
             description=(
                 f"🔗 [Click to invite SuperAlpha Do]({INVITE_URL})\n"
-                "```bash\n$ alpha invite\nInvite URL generated.\n```"
+                + ansi.term(
+                    ansi.prompt("alpha invite"),
+                    ansi.ok("Invite URL generated."),
+                )
             ),
             color=0x2ECC71,
         )
