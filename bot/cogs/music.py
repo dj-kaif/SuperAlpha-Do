@@ -29,12 +29,16 @@ from bot.cogs.checks import perms_or_developer
 from bot.services.music import (
     classify_ytdl_error,
     extract_info,
-    fetch_metadata,
     get_ffmpeg_opts,
     get_ytdl_opts,
     is_apple_url,
     is_soundcloud_url,
     is_spotify_url,
+    parse_spotify_url,
+    parse_apple_url,
+    search_query_for,
+    fetch_apple_metadata,
+    fetch_spotify_metadata,
     build_filter_string,
     youtube_search_query,
 )
@@ -152,28 +156,61 @@ class Music(commands.Cog, name="music"):
 
     async def _fetch_track(self, query: str, requester: discord.Member) -> Track | None:
         search_query = query
+        self._last_fetch_error = None
+
+        spotify = parse_spotify_url(query)
+        if spotify:
+            kind, spotify_id = spotify
+            if kind != "track":
+                self._last_fetch_error = (
+                    f"I can't play a Spotify **{kind}** link. Open the song in "
+                    "Spotify, then send me that song's own link."
+                )
+                return None
+
+            info = await fetch_spotify_metadata(spotify_id)
+            if not info:
+                self._last_fetch_error = (
+                    "Couldn't read that Spotify track. The Web API isn't "
+                    "configured — add `SPOTIPY_CLIENT_ID` and "
+                    "`SPOTIPY_CLIENT_SECRET` to `.env`, or just send a search term."
+                )
+                return None
+            search_query = search_query_for(info["title"], info["artist"])
+            print(f"Spotify '{spotify_id}' -> YouTube search: {search_query}")
+
+        apple = parse_apple_url(query)
+        if apple:
+            kind, song_id = apple
+            if kind != "song":
+                self._last_fetch_error = (
+                    "I can't play an Apple Music **album** link. Open the song "
+                    "in Apple Music, then send me that song's own link."
+                )
+                return None
+
+            info = await fetch_apple_metadata(song_id)
+            if not info:
+                self._last_fetch_error = (
+                    "Couldn't read that Apple Music track. Try sending a search "
+                    "term instead."
+                )
+                return None
+            search_query = search_query_for(info["title"], info["artist"])
+            print(f"Apple Music '{song_id}' -> YouTube search: {search_query}")
+
         is_external_url = query.startswith("http")
 
-        if is_external_url:
-            if is_spotify_url(query):
-                try:
-                    info = await fetch_metadata(query, require_artist=True)
-                    if info:
-                        search_query = f"{info['title']} {info['artist']}"
-                        print(f"Spotify detected, searching YouTube for: {search_query}")
-                except Exception as e:
-                    print(f"Spotify info error: {e}")
-
-            elif is_apple_url(query):
-                try:
-                    info = await fetch_metadata(query, require_artist=False)
-                    if info:
-                        search_query = f"{info['title']} {info['artist']}"
-                        print(f"Apple Music detected, searching YouTube for: {search_query}")
-                except Exception as e:
-                    print(f"Apple Music info error: {e}")
-
-            elif is_soundcloud_url(query):
+        if is_external_url and not (spotify or apple):
+            if is_spotify_url(query) or is_apple_url(query):
+                # A Spotify/Apple link we couldn't parse is still unplayable: never
+                # hand it to yt-dlp, which has no extractor for either service.
+                self._last_fetch_error = (
+                    "That link doesn't point at a single song. Send the **song's** "
+                    "share link, or just a search term."
+                )
+                return None
+            if is_soundcloud_url(query):
                 print(f"SoundCloud URL detected: {query}")
 
         try:
@@ -182,7 +219,6 @@ class Music(commands.Cog, name="music"):
                 if search_query.startswith("http")
                 else youtube_search_query(search_query)
             )
-            self._last_fetch_error = None
             data = await extract_info(full_query)
         except Exception as e:
             print(f"yt-dlp error: {e}")
@@ -497,9 +533,9 @@ class Music(commands.Cog, name="music"):
                 await ctx.send(embed=embed)
                 return
 
-        is_external = query.startswith("http")
+        is_external = query.startswith("http") or bool(parse_spotify_url(query) or parse_apple_url(query))
         if is_external:
-            if is_spotify_url(query):
+            if parse_spotify_url(query):
                 msg = await ctx.send(embed=self._make_embed("🔍 Spotify Detected", 0x1DB954, "Finding on YouTube..."))
             elif is_apple_url(query):
                 msg = await ctx.send(embed=self._make_embed("🔍 Apple Music Detected", 0xFC3C44, "Finding on YouTube..."))
