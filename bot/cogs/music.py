@@ -23,6 +23,7 @@ from collections import deque
 import discord
 import yt_dlp
 from discord import app_commands
+from discord.abc import Messageable
 from discord.ext import commands
 
 from bot.cogs.checks import perms_or_developer
@@ -319,24 +320,33 @@ class Music(commands.Cog, name="music"):
             try:
                 player._start_time = asyncio.get_running_loop().time()
                 voice_client.play(source, after=after_callback)
-                await self._update_presence(player.current, guild)
-                await self._maybe_start_spectrum(guild_id, guild)
-                if player.text_channel:
-                    await player.text_channel.send(
-                        embed=self._build_now_playing_embed(player.current, player)
-                    )
             except Exception as e:
+                # Only failing to *start* playback is fatal. The cosmetic updates
+                # below used to share this handler, so a failed presence update or
+                # a blocked "now playing" message wiped the whole queue.
                 print(f"Voice connection error: {e}")
-                player.queue.clear()
                 player.current = None
-                if player.text_channel:
-                    embed = self._make_embed(
-                        "❌ Voice Error", 0xE74C3C, "Voice connection failed. Please rejoin."
-                    )
-                    try:
-                        await player.text_channel.send(embed=embed)
-                    except Exception:
-                        pass
+                await self._notify(
+                    player,
+                    self._make_embed(
+                        "❌ Voice Error", 0xE74C3C,
+                        "Voice connection failed. Please rejoin — your queue is kept.",
+                    ),
+                )
+                return
+
+            # Everything from here on is cosmetic: it must never touch the queue.
+            try:
+                await self._update_presence(player.current, guild)
+            except Exception as e:
+                print(f"Presence update failed in guild {guild_id}: {e}")
+            try:
+                await self._maybe_start_spectrum(guild_id, guild)
+            except Exception as e:
+                print(f"Spectrum failed to start in guild {guild_id}: {e}")
+            await self._notify(
+                player, self._build_now_playing_embed(player.current, player)
+            )
         else:
             if player.autoplay and player.last_track:
                 loop = asyncio.get_running_loop()
@@ -362,11 +372,34 @@ class Music(commands.Cog, name="music"):
             guild = self.bot.get_guild(guild_id)
             if guild and guild.voice_client:
                 await self._update_presence(None, guild)
-            if player.text_channel:
-                embed = self._make_embed(
-                    "🎵 Queue Finished", 0x95A5A6, "No more tracks in queue."
-                )
-                await player.text_channel.send(embed=embed)
+            await self._notify(
+                player, self._make_embed("🎵 Queue Finished", 0x95A5A6, "No more tracks in queue.")
+            )
+
+    async def _notify(self, player: GuildPlayer, embed: discord.Embed) -> None:
+        """Send a status embed to the player's text channel, if one is available.
+
+        Delivery is best-effort: a missing permission or a deleted channel must
+        never propagate into the playback path, where it would be mistaken for a
+        fatal playback error.
+        """
+        channel = player.text_channel
+        if channel is None:
+            return
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"Could not post music status in guild {player.guild_id}: {e}")
+
+    @staticmethod
+    def _remember_text_channel(player: GuildPlayer, ctx: commands.Context) -> None:
+        """Remember where to post status messages for this guild.
+
+        Any Messageable qualifies. A voice channel's text chat arrives as
+        ``discord.VoiceChannel``, so restricting this to ``TextChannel`` used to
+        silently drop every status message for commands run inside voice chat.
+        """
+        player.text_channel = ctx.channel if isinstance(ctx.channel, Messageable) else None
 
     # ── join ──────────────────────────────────────────────────────────────────
     @commands.command(name="join", aliases=["connect", "j", "cd"])
@@ -499,7 +532,7 @@ class Music(commands.Cog, name="music"):
 
         ctx.voice_client.play(source, after=after_callback)
         await self._update_presence(player.current, ctx.guild)
-        player.text_channel = ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
+        self._remember_text_channel(player, ctx)
         await ctx.send(embed=self._build_now_playing_embed(player.current, player))
 
     # ── play ──────────────────────────────────────────────────────────────────
@@ -564,9 +597,7 @@ class Music(commands.Cog, name="music"):
             return
 
         player = self._get_player(ctx.guild.id)
-        player.text_channel = (
-            ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
-        )
+        self._remember_text_channel(player, ctx)
 
         if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
             player.queue.append(track)
@@ -955,9 +986,7 @@ class Music(commands.Cog, name="music"):
         loading_msg = await ctx.send(embed=loading_embed)
 
         player = self._get_player(ctx.guild.id)
-        player.text_channel = (
-            ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
-        )
+        self._remember_text_channel(player, ctx)
 
         search_queries = [
             f"ytsearch15:{genre} mix",
@@ -1486,7 +1515,7 @@ class Music(commands.Cog, name="music"):
                 await ctx.author.voice.channel.connect()
             
             player = self._get_player(ctx.guild.id)
-            player.text_channel = ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
+            self._remember_text_channel(player, ctx)
             
             added = 0
             for song in songs[:20]:

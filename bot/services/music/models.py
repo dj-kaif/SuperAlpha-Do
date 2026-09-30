@@ -41,7 +41,7 @@ class GuildPlayer:
         self.equalizer: str = "flat"
         self.skip_event: asyncio.Event = asyncio.Event()
         self.original_nick: str | None = None
-        self.text_channel: discord.TextChannel | None = None
+        self.text_channel: discord.Messageable | None = None
         self.skip_votes: set[int] = set()
         self.vote_msg_id: int | None = None
         self._start_time: float = 0

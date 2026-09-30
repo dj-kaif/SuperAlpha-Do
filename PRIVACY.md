@@ -21,7 +21,7 @@ personal data described below.
 
 - Support server: https://discord.gg/Z2NXkwkFK3
 - Bot owner contact: `@r4ve_x` on Discord
-- Contact email: 'guptamaamayush@gmail.com'
+- Contact email: guptamaamayush@gmail.com
 
 ---
 
@@ -283,4 +283,4 @@ Questions about this policy or requests about your data:
 
 - Support server: https://discord.gg/Z2NXkwkFK3
 - Discord: `@r4ve_x`
-- Email: 'guptamaamayush@gmail.com'
+- Email: guptamaamayush@gmail.com

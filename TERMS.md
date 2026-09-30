@@ -176,8 +176,6 @@ These Terms are governed by the laws of **India**, without regard
 to its conflict-of-law rules. Any dispute arising from these Terms or the Bot will be
 subject to the exclusive jurisdiction of the courts of **India**.
 
-*(Replace the placeholders above with your actual jurisdiction before publishing.)*
-
 ---
 
 ## 14. Changes to these Terms

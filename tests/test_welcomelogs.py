@@ -87,6 +87,26 @@ def _sent_embeds(logs) -> list[discord.Embed]:
     return embeds
 
 
+def _sent_transcripts(logs) -> list[str]:
+    """Text of every .txt transcript attached to the log channel."""
+    texts = []
+    for call in logs.send.call_args_list:
+        for handle in call.kwargs.get("files") or []:
+            if str(getattr(handle, "filename", "")).endswith(".txt"):
+                fp = handle.fp
+                fp.seek(0)
+                texts.append(fp.read().decode("utf-8"))
+    return texts
+
+
+def _sent_filenames(logs) -> list[str]:
+    names = []
+    for call in logs.send.call_args_list:
+        for handle in call.kwargs.get("files") or []:
+            names.append(str(getattr(handle, "filename", "")))
+    return names
+
+
 def _field(embed: discord.Embed, name: str) -> str | None:
     for field in embed.fields:
         if field.name == name:
@@ -128,8 +148,14 @@ async def test_purge_logs_every_deleted_message(logged):
     embeds = _sent_embeds(logged.logs)
     assert embeds[0].author.name == "Messages Purged"
     assert "3 message(s) removed" in embeds[0].description
-    bodies = [e.description for e in embeds[1:]]
-    assert bodies == ["first", "second", "third"]
+
+    transcripts = _sent_transcripts(logged.logs)
+    assert len(transcripts) == 1
+    text = transcripts[0]
+    for body in ("first", "second", "third"):
+        assert body in text
+    # one embed and one message, not one per purged message
+    assert logged.logs.send.await_count == 1
 
 
 async def test_purge_log_names_the_moderator(logged):
@@ -190,7 +216,8 @@ async def test_purge_logging_ignores_dm_messages(logged):
     logged.logs.send.assert_not_called()
 
 
-async def test_purge_caps_how_many_messages_it_writes(logged):
+async def test_purge_logs_every_message_not_just_the_first_few(logged):
+    """A file has no embed cap, so nothing gets silently dropped."""
     author = make_member(USER_IDS["member"], guild=logged.guild)
     messages = [
         _message(logged, author, content=f"msg {i}", message_id=i, minutes_ago=100 - i)
@@ -201,12 +228,14 @@ async def test_purge_caps_how_many_messages_it_writes(logged):
 
     embeds = _sent_embeds(logged.logs)
     assert "40 message(s) removed" in embeds[0].description
-    assert _field(embeds[0], "Note").startswith(f"Showing the first {welcomelogs.MAX_PURGE_LOGS}")
-    assert len(embeds) - 1 == welcomelogs.MAX_PURGE_LOGS
+    assert _field(embeds[0], "Note") is None
+    text = _sent_transcripts(logged.logs)[0]
+    for i in range(40):
+        assert f"msg {i}" in text
 
 
 async def test_purge_releases_cached_images_it_never_logs(logged):
-    """Bytes for messages past the cap must not sit in the cache until evicted."""
+    """Bytes for pictures that don't fit in one log message must not linger."""
     author = make_member(USER_IDS["member"], guild=logged.guild)
     messages = [
         _message(
@@ -221,8 +250,8 @@ async def test_purge_releases_cached_images_it_never_logs(logged):
 
     await logged.cog.on_bulk_message_delete(messages)
 
-    # The 25 written out are claimed (popped and re-uploaded); the rest are
-    # discarded. Either way the purge must not leave bytes in the cache.
+    # Images that fit are claimed and re-uploaded; the rest are discarded.
+    # Either way the purge must not leave bytes in the cache.
     assert attachment_cache.stats() == {"messages": 0, "bytes": 0}
 
 
@@ -235,10 +264,9 @@ async def test_purge_batches_embeds_instead_of_spamming(logged):
 
     await logged.cog.on_bulk_message_delete(messages)
 
-    # One summary, then ceil(12 / 5) batched messages.
-    assert logged.logs.send.await_count == 1 + 3
-    for call in logged.logs.send.call_args_list:
-        assert len(call.kwargs.get("embeds") or []) <= welcomelogs.EMBEDS_PER_LOG_MESSAGE
+    # A single message: the summary embed plus the transcript file.
+    assert logged.logs.send.await_count == 1
+    assert _sent_transcripts(logged.logs)
 
 
 async def test_purge_counts_skipped_bot_messages(logged):
@@ -253,7 +281,9 @@ async def test_purge_counts_skipped_bot_messages(logged):
 
     embeds = _sent_embeds(logged.logs)
     assert _field(embeds[0], "Bot messages") == "1 skipped"
-    assert [e.description for e in embeds[1:]] == ["human"]
+    text = _sent_transcripts(logged.logs)[0]
+    assert "human" in text
+    assert "beep" not in text
 
 
 async def test_purge_keeps_oldest_message_first(logged):
@@ -263,7 +293,8 @@ async def test_purge_keeps_oldest_message_first(logged):
 
     await logged.cog.on_bulk_message_delete([newer, older])
 
-    assert [e.description for e in _sent_embeds(logged.logs)[1:]] == ["older", "newer"]
+    text = _sent_transcripts(logged.logs)[0]
+    assert text.index("older") < text.index("newer")
 
 
 async def test_purge_with_nothing_deleted_sends_nothing(logged):
@@ -325,8 +356,11 @@ async def test_purge_resends_deleted_pictures(logged):
     await logged.cog.on_bulk_message_delete([first, second])
 
     batch = logged.logs.send.await_args.kwargs
-    assert sorted(f.filename for f in batch["files"]) == ["a.png", "b.png"]
-    assert [e.image.url for e in batch["embeds"]] == ["attachment://a.png", "attachment://b.png"]
+    names = [f.filename for f in batch["files"]]
+    assert [n for n in names if not n.endswith(".txt")] == ["a.png", "b.png"]
+    assert sum(n.endswith(".txt") for n in names) == 1
+    # pictures are no longer one-embed-per-message, so they carry no embed image
+    assert batch.get("embeds") is None and batch["embed"].image.url is None
 
 
 async def test_picture_is_dropped_when_attachments_logging_is_off(logged):
@@ -337,7 +371,8 @@ async def test_picture_is_dropped_when_attachments_logging_is_off(logged):
 
     await logged.cog.on_bulk_message_delete([message])
 
-    assert logged.logs.send.await_args.kwargs["files"] is None
+    names = _sent_filenames(logged.logs)
+    assert len(names) == 1 and names[0].endswith(".txt")
     assert not attachment_cache.has_message_images(7)
 
 
@@ -464,3 +499,152 @@ async def test_discard_forgets_without_returning(env):
 
     assert attachment_cache.pop_message_images(1) == []
     assert attachment_cache.stats()["bytes"] == 0
+
+
+# ── Purge transcript file ─────────────────────────────────────────────────────
+async def test_purge_is_always_a_single_log_message(logged):
+    """A 200-message purge must not become 200 messages in the log channel."""
+    author = make_member(USER_IDS["member"], guild=logged.guild)
+    messages = [
+        _message(logged, author, content=f"msg {i}", message_id=i, minutes_ago=200 - i)
+        for i in range(200)
+    ]
+
+    await logged.cog.on_bulk_message_delete(messages)
+
+    assert logged.logs.send.await_count == 1
+    assert len(_sent_transcripts(logged.logs)) == 1
+
+
+async def test_purge_transcript_records_metadata(logged):
+    author = make_member(USER_IDS["member"], guild=logged.guild)
+    message = _message(
+        logged, author, content="hello there", attachments=[_attachment("pic.png")], message_id=99
+    )
+    await logged.cog.on_message(message)
+
+    await logged.cog.on_bulk_message_delete([message])
+
+    text = _sent_transcripts(logged.logs)[0]
+    assert "hello there" in text
+    assert "pic.png" in text
+    assert str(USER_IDS["member"]) in text          # author id
+    assert str(message.id) in text                   # message id
+    assert str(GUILD_ID) in text                     # server id
+    assert "#" + logged.source.name in text          # channel name
+    assert "Purged by" in text
+    assert text.endswith("\n")
+
+
+async def test_purge_transcript_marks_empty_messages(logged):
+    author = make_member(USER_IDS["member"], guild=logged.guild)
+    message = _message(logged, author, content="", message_id=5)
+
+    await logged.cog.on_bulk_message_delete([message])
+
+    assert "no text content" in _sent_transcripts(logged.logs)[0]
+
+
+async def test_purge_never_exceeds_the_file_limit(logged):
+    """One transcript + at most FILES_PER_LOG_MESSAGE-1 pictures."""
+    author = make_member(USER_IDS["member"], guild=logged.guild)
+    messages = [
+        _message(
+            logged, author, content=f"m{i}", message_id=i, minutes_ago=50 - i,
+            attachments=[_attachment(f"p{i}.png")],
+        )
+        for i in range(20)
+    ]
+    for message in messages:
+        await logged.cog.on_message(message)
+    assert attachment_cache.stats()["messages"] == 20
+
+    await logged.cog.on_bulk_message_delete(messages)
+
+    assert logged.logs.send.await_count == 1
+    files = logged.logs.send.await_args.kwargs["files"]
+    assert len(files) <= welcomelogs.FILES_PER_LOG_MESSAGE
+    # the surplus is reported rather than dropped silently
+    note = _field(_sent_embeds(logged.logs)[0], "Note")
+    assert "not attached" in note
+    # and the cache is drained either way
+    assert attachment_cache.stats() == {"messages": 0, "bytes": 0}
+
+
+async def test_purge_transcript_truncates_a_wall_of_text(logged):
+    author = make_member(USER_IDS["member"], guild=logged.guild)
+    message = _message(logged, author, content="x" * (welcomelogs.PURGE_TEXT_CHUNK + 500), message_id=3)
+
+    await logged.cog.on_bulk_message_delete([message])
+
+    text = _sent_transcripts(logged.logs)[0]
+    assert "[...truncated]" in text
+    assert text.count("x") <= welcomelogs.PURGE_TEXT_CHUNK + 200
+
+
+async def test_purge_transcript_filename_is_a_txt(logged):
+    author = make_member(USER_IDS["member"], guild=logged.guild)
+    message = _message(logged, author, content="hi", message_id=1)
+
+    await logged.cog.on_bulk_message_delete([message])
+
+    names = _sent_filenames(logged.logs)
+    assert len(names) == 1
+    assert names[0].startswith("purge-") and names[0].endswith(".txt")
+
+
+async def test_purge_transcript_separates_removed_from_logged(logged):
+    """Bot messages are excluded from the transcript but still counted as removed."""
+    human = make_member(USER_IDS["member"], guild=logged.guild)
+    bot = make_member(USER_IDS["admin"], guild=logged.guild, bot=True)
+    messages = [
+        _message(logged, human, content="kept", message_id=1),
+        _message(logged, bot, content="dropped", message_id=2),
+        _message(logged, bot, content="dropped too", message_id=3),
+    ]
+
+    await logged.cog.on_bulk_message_delete(messages)
+
+    text = _sent_transcripts(logged.logs)[0]
+    assert "Removed   : 3 message(s)" in text
+    assert "2 bot message(s) not logged" in text
+    assert "Logged    : 1 message(s)" in text
+    assert "kept" in text and "dropped" not in text
+
+
+async def test_purge_of_only_bot_messages_still_sends_a_summary(logged):
+    """No logged messages means an empty transcript, never an IndexError."""
+    bot = make_member(USER_IDS["admin"], guild=logged.guild, bot=True)
+    messages = [_message(logged, bot, content="beep", message_id=i) for i in (1, 2)]
+
+    await logged.cog.on_bulk_message_delete(messages)
+
+    assert logged.logs.send.await_count == 1
+    embeds = _sent_embeds(logged.logs)
+    assert embeds[0].author.name == "Messages Purged"
+    assert _field(embeds[0], "Bot messages") == "2 skipped"
+    text = _sent_transcripts(logged.logs)[0]
+    assert "Logged    : 0 message(s)" in text
+    assert "2 bot message(s) not logged" in text
+
+
+async def test_purge_caps_images_across_several_messages(logged):
+    """3 messages x 4 cached pictures is 12, which is over the 9 available slots."""
+    author = make_member(USER_IDS["member"], guild=logged.guild)
+    messages = [
+        _message(
+            logged, author, content=f"m{i}", message_id=i, minutes_ago=10 - i,
+            attachments=[_attachment(f"p{i}_{j}.png") for j in range(4)],
+        )
+        for i in range(3)
+    ]
+    for message in messages:
+        await logged.cog.on_message(message)
+
+    await logged.cog.on_bulk_message_delete(messages)
+
+    files = logged.logs.send.await_args.kwargs["files"]
+    assert len(files) == welcomelogs.MAX_PURGE_IMAGES + 1  # + transcript
+    assert len(files) <= welcomelogs.FILES_PER_LOG_MESSAGE
+    assert "3 image(s) not attached" in _field(_sent_embeds(logged.logs)[0], "Note")
+    assert attachment_cache.stats() == {"messages": 0, "bytes": 0}

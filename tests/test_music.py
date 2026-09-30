@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from bot.cogs import music as music_cog
+import discord
+
 from bot.cogs.music import Music
 from bot.services.music import sources as music_sources
 from bot.services.music.models import Track
@@ -17,7 +21,7 @@ from bot.services.music.sources import (
     search_query_for,
 )
 
-from helpers import USER_IDS, make_ctx, make_member
+from helpers import USER_IDS, make_ctx, make_guild, make_member
 
 
 def _track(title: str, requester):
@@ -396,3 +400,124 @@ def test_search_query_prefers_artist_title():
     assert search_query_for("Hello", "") == "Hello"
     assert search_query_for("", "Adele") == ""
     assert search_query_for(" Hello ", " Adele ") == "Adele - Hello"
+
+
+def _voice_chat_channel():
+    """A voice channel's text chat, as discord.py represents it."""
+    from unittest.mock import MagicMock
+
+    return MagicMock(spec=discord.VoiceChannel)
+
+
+def test_status_channel_accepts_voice_channel_chat(bot):
+    """Commands run in a voice channel's chat must still get status messages."""
+    cog = Music(bot)
+    player = cog._get_player(1001)
+    chat = _voice_chat_channel()
+
+    cog._remember_text_channel(player, SimpleNamespace(channel=chat))
+
+    assert player.text_channel is chat
+
+
+def test_status_channel_accepts_text_channel(bot):
+    cog = Music(bot)
+    player = cog._get_player(1001)
+    text = MagicMock(spec=discord.TextChannel)
+
+    cog._remember_text_channel(player, SimpleNamespace(channel=text))
+
+    assert player.text_channel is text
+
+
+def test_status_channel_ignores_unusable_channel(bot):
+    cog = Music(bot)
+    player = cog._get_player(1001)
+
+    cog._remember_text_channel(player, SimpleNamespace(channel=object()))
+
+    assert player.text_channel is None
+
+
+def _queued_player(cog, guild, member, count: int):
+    player = cog._get_player(guild.id)
+    for i in range(count):
+        player.queue.append(_track(f"song {i}", member))
+    voice_client = MagicMock()
+    voice_client.channel = MagicMock()
+    guild.voice_client = voice_client
+    return player, voice_client
+
+
+async def test_failed_status_update_does_not_clear_the_queue(bot, monkeypatch):
+    """A cosmetic failure must never destroy the queue.
+
+    The now-playing send, presence update and spectrum start used to share one
+    try/except that cleared the queue, so a blocked channel or a failed presence
+    update silently wiped everything.
+    """
+    import discord as discord_mod
+
+    monkeypatch.setattr(discord_mod, "FFmpegPCMAudio", MagicMock())
+    monkeypatch.setattr(discord_mod, "PCMVolumeTransformer", MagicMock())
+
+    cog = Music(bot)
+    member = make_member(USER_IDS["member"])
+    guild = make_guild()
+    bot.get_guild = MagicMock(return_value=guild)
+    player, voice_client = _queued_player(cog, guild, member, 3)
+
+    # every cosmetic step fails, as it would with no permissions
+    async def boom(*args, **kwargs):
+        raise RuntimeError("Missing Permissions")
+
+    monkeypatch.setattr(cog, "_update_presence", boom)
+    monkeypatch.setattr(cog, "_maybe_start_spectrum", boom)
+    player.text_channel = MagicMock(spec=discord.VoiceChannel)
+    player.text_channel.send = AsyncMock(side_effect=boom)
+
+    await cog._play_next_impl(guild.id)
+
+    voice_client.play.assert_called_once()
+    assert player.current is not None  # playback started
+    assert len(player.queue) == 2  # one popped, the rest survived
+
+
+async def test_failed_presence_alone_keeps_the_queue(bot, monkeypatch):
+    import discord as discord_mod
+
+    monkeypatch.setattr(discord_mod, "FFmpegPCMAudio", MagicMock())
+    monkeypatch.setattr(discord_mod, "PCMVolumeTransformer", MagicMock())
+
+    cog = Music(bot)
+    member = make_member(USER_IDS["member"])
+    guild = make_guild()
+    bot.get_guild = MagicMock(return_value=guild)
+    player, _ = _queued_player(cog, guild, member, 2)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("cannot edit channel status")
+
+    monkeypatch.setattr(cog, "_update_presence", boom)
+    player.text_channel = None
+
+    await cog._play_next_impl(guild.id)
+
+    assert len(player.queue) == 1
+
+
+async def test_notify_swallows_send_failures(bot):
+    cog = Music(bot)
+    player = cog._get_player(1001)
+    player.text_channel = MagicMock(spec=discord.VoiceChannel)
+    player.text_channel.send = AsyncMock(side_effect=RuntimeError("Missing Permissions"))
+
+    # must not raise
+    await cog._notify(player, discord.Embed(title="now playing"))
+
+
+async def test_notify_without_channel_is_a_noop(bot):
+    cog = Music(bot)
+    player = cog._get_player(1001)
+
+    await cog._notify(player, discord.Embed(title="now playing"))

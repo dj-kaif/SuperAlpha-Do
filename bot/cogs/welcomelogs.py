@@ -2,6 +2,7 @@
 cogs/welcomelogs.py — Welcome messages and server logging.
 """
 
+import io
 import json
 import os
 import time
@@ -19,11 +20,18 @@ DATA_DIR = "data/welcomelogs"
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-#: A purge can remove up to 500 messages, so the log is summarised and only the
-#: first ``MAX_PURGE_LOGS`` are written out in full.
-MAX_PURGE_LOGS = 25
+#: Discord's per-message limits for log batches.
 EMBEDS_PER_LOG_MESSAGE = 5
 FILES_PER_LOG_MESSAGE = 10
+
+#: A purge can remove up to 500 messages. Writing each one as its own embed spammed
+#: the log channel with dozens of messages, so a whole purge now goes out as a
+#: single text file instead.
+#: One slot of every log message is taken by the transcript itself.
+MAX_PURGE_IMAGES = FILES_PER_LOG_MESSAGE - 1
+#: Per-message text kept in the transcript, so one wall of text can't blow the
+#: attachment limit on its own.
+PURGE_TEXT_CHUNK = 1000
 
 #: How long a purge note stays valid, so a client-side bulk delete happening
 #: seconds later is not attributed to the wrong moderator.
@@ -157,6 +165,55 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
 
         if batch_embeds:
             await channel.send(embeds=batch_embeds, files=batch_files or None)
+
+    def _purge_transcript(
+        self,
+        guild,
+        channel_name: str,
+        messages: list[discord.Message],
+        purged_count: int,
+        moderator,
+        bot_count: int,
+        attached_images: int,
+        total_images: int,
+        stamp: datetime,
+    ) -> str:
+        """Render a whole purge as plain text.
+
+        ``messages`` is the non-bot subset that gets logged (possibly empty) and
+        ``purged_count`` is everything Discord removed, so the header can show
+        both totals.
+        """
+        header = [
+            "SuperAlpha Do - purged message transcript",
+            f"Server    : {guild.name} ({guild.id})",
+            f"Channel   : #{channel_name}",
+            f"Purged by : {moderator if moderator else 'Unknown (client-side bulk delete)'}",
+            f"Removed   : {purged_count} message(s)"
+            + (f" ({bot_count} bot message(s) not logged)" if bot_count else ""),
+            f"Logged    : {len(messages)} message(s)",
+            f"Generated : {stamp:%Y-%m-%d %H:%M:%S} UTC",
+        ]
+        if total_images:
+            header.append(
+                f"Images    : {attached_images} of {total_images} attached to this message"
+            )
+
+        rows = ["", "=" * 72]
+        for index, message in enumerate(messages, 1):
+            attachments = [a.filename for a in message.attachments]
+            rows.append(f"[{index}] {message.created_at:%Y-%m-%d %H:%M:%S} UTC")
+            rows.append(f"    Author : {message.author} ({message.author.id})")
+            rows.append(f"    ID     : {message.id}")
+            if attachments:
+                rows.append(f"    Files  : {', '.join(attachments)}")
+            content = message.content or "*no text content*"
+            if len(content) > PURGE_TEXT_CHUNK:
+                content = content[:PURGE_TEXT_CHUNK] + " [...truncated]"
+            for line in content.splitlines() or [""]:
+                rows.append(f"    | {line}")
+
+        return "\n".join(header + rows) + "\n"
 
     def cog_unload(self) -> None:
         attachment_cache.clear()
@@ -347,10 +404,16 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
         logged = [m for m in purged if not getattr(m.author, "bot", False)]
         bot_count = len(purged) - len(logged)
 
+        stamp = datetime.now(timezone.utc)
+        filename = f"purge-{stamp:%Y%m%d-%H%M%S}.txt"
+
         summary = discord.Embed(
             color=0x95A5A6,
-            timestamp=datetime.now(timezone.utc),
-            description=f"{len(purged)} message(s) removed from {purged[0].channel.mention}.",
+            timestamp=stamp,
+            description=(
+                f"{len(purged)} message(s) removed from {purged[0].channel.mention}.\n"
+                f"Full contents attached as `{filename}`."
+            ),
         )
         summary.set_author(name="Messages Purged")
         summary.add_field(name="Channel", value=purged[0].channel.mention, inline=True)
@@ -362,34 +425,41 @@ class WelcomeLogs(commands.Cog, name="welcomelogs"):
         if bot_count:
             summary.add_field(name="Bot messages", value=f"{bot_count} skipped", inline=True)
 
-        shown = logged[:MAX_PURGE_LOGS]
-        if len(shown) < len(logged):
+        image_files: list[discord.File] = []
+        image_slots = MAX_PURGE_IMAGES
+        total_images = 0
+        for message in logged:
+            total_images += len(message.attachments)
+            if image_slots > 0:
+                claimed = self._claim_images(message, config)
+                # One message can carry more pictures than slots are left, and
+                # going over the file limit fails the whole send.
+                image_files.extend(claimed[:image_slots])
+                image_slots -= min(len(claimed), image_slots)
+            else:
+                # No room left in this message: release the bytes rather than
+                # leaving them to sit in the cache until eviction.
+                attachment_cache.discard_message_images(message.id)
+
+        if total_images > len(image_files):
             summary.add_field(
                 name="Note",
-                value=f"Showing the first {MAX_PURGE_LOGS} of {len(logged)} — the rest were not logged.",
+                value=(
+                    f"{total_images - len(image_files)} image(s) not attached — Discord allows "
+                    f"{MAX_PURGE_IMAGES} per log message. Their filenames are in the transcript."
+                ),
                 inline=False,
             )
 
-        entries: list[tuple[discord.Embed, list[discord.File]]] = []
-        for message in shown:
-            try:
-                embed = self._deleted_message_embed(message, title="Purged Message")
-                files = self._claim_images(message, config)
-                if files:
-                    embed.set_image(url=f"attachment://{files[0].filename}")
-                entries.append((embed, files))
-            except Exception:
-                continue
-
-        # Messages past the cap never get logged, so hand back their cached bytes
-        # rather than leaving them to sit in the cache until they are evicted.
-        for message in logged[MAX_PURGE_LOGS:]:
-            attachment_cache.discard_message_images(message.id)
+        text = self._purge_transcript(
+            guild, purged[0].channel.name, logged, len(purged), moderator, bot_count,
+            len(image_files), total_images, stamp,
+        )
+        files: list[discord.File] = [discord.File(io.BytesIO(text.encode("utf-8")), filename=filename)]
+        files.extend(image_files)
 
         try:
-            await channel.send(embed=summary)
-            if entries:
-                await self._send_deleted_logs(channel, entries)
+            await channel.send(embed=summary, files=files)
         except Exception:
             pass
 
