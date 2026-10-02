@@ -123,7 +123,7 @@ async def on_ready() -> None:
 
     activity = discord.Activity(
         type=discord.ActivityType.playing,
-        name="Fixing my own bugs",
+        name="I love Arch Linux",
     )
     await bot.change_presence(status=discord.Status.idle, activity=activity)
     await bot.tree.sync()

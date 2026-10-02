@@ -6,6 +6,7 @@ Sets users as AFK with reason, notifies when pinged, welcomes back.
 import asyncio
 import json
 import os
+import sqlite3
 import time
 
 import discord
@@ -13,29 +14,83 @@ from discord import app_commands
 from discord.ext import commands
 
 
-DATA_DIR = "data/afk"
-os.makedirs(DATA_DIR, exist_ok=True)
+DATABASE_FILE = "data/afk.db"
 
+_db_conn: sqlite3.Connection | None = None
 _afk_cache: dict | None = None
+_db_uids: set[str] = set()
 _afk_dirty = False
 
 
-def get_afk_file() -> str:
-    return os.path.join(DATA_DIR, "afk.json")
+def get_db() -> sqlite3.Connection:
+    global _db_conn
+    if _db_conn is None:
+        os.makedirs("data", exist_ok=True)
+        _db_conn = sqlite3.connect(DATABASE_FILE, check_same_thread=False)
+        _db_conn.row_factory = sqlite3.Row
+        _db_conn.execute("PRAGMA journal_mode=WAL")
+    return _db_conn
 
 
-def _load_afk_from_disk() -> dict:
-    path = get_afk_file()
-    if os.path.exists(path):
+def init_db() -> None:
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS afk_users (
+            user_id   TEXT PRIMARY KEY,
+            name      TEXT,
+            reason    TEXT,
+            timestamp REAL
+        )
+    """)
+    conn.commit()
+    _migrate_legacy_json()
+
+
+def _migrate_legacy_json() -> None:
+    """One-time import of the old data/afk/afk.json into SQLite."""
+    path = os.path.join("data", "afk", "afk.json")
+    if not os.path.exists(path):
+        return
+    if get_db().execute("SELECT COUNT(*) AS n FROM afk_users").fetchone()["n"]:
+        return
+    try:
         with open(path, "r") as f:
-            return json.load(f)
-    return {}
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+    for uid, info in data.items():
+        get_db().execute(
+            "INSERT OR IGNORE INTO afk_users (user_id, name, reason, timestamp)"
+            " VALUES (?,?,?,?)",
+            (
+                str(uid),
+                info.get("name"),
+                info.get("reason"),
+                info.get("timestamp") or time.time(),
+            ),
+        )
+    get_db().commit()
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def load_afk() -> dict:
-    global _afk_cache
+    global _afk_cache, _db_uids
     if _afk_cache is None:
-        _afk_cache = _load_afk_from_disk()
+        rows = get_db().execute(
+            "SELECT user_id, name, reason, timestamp FROM afk_users"
+        ).fetchall()
+        _db_uids = {r["user_id"] for r in rows}
+        _afk_cache = {
+            r["user_id"]: {
+                "name": r["name"],
+                "reason": r["reason"],
+                "timestamp": r["timestamp"] or 0.0,
+            }
+            for r in rows
+        }
     return _afk_cache
 
 
@@ -46,13 +101,28 @@ def save_afk(data: dict) -> None:
 
 
 def flush_afk() -> None:
-    global _afk_dirty
+    global _afk_dirty, _db_uids
     if not _afk_dirty or _afk_cache is None:
         return
-    path = get_afk_file()
-    with open(path, "w") as f:
-        json.dump(_afk_cache, f, indent=2)
+    conn = get_db()
+    for uid in list(_db_uids):
+        if uid not in _afk_cache:
+            conn.execute("DELETE FROM afk_users WHERE user_id = ?", (uid,))
+            _db_uids.discard(uid)
+    for uid, info in _afk_cache.items():
+        conn.execute(
+            "INSERT INTO afk_users (user_id, name, reason, timestamp)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(user_id) DO UPDATE SET"
+            " name=excluded.name, reason=excluded.reason, timestamp=excluded.timestamp",
+            (str(uid), info.get("name"), info.get("reason"), info.get("timestamp") or 0.0),
+        )
+        _db_uids.add(str(uid))
+    conn.commit()
     _afk_dirty = False
+
+
+init_db()
 
 
 def format_duration(seconds: float) -> str:
@@ -85,7 +155,7 @@ class AFK(commands.Cog, name="afk"):
     async def _periodic_flush(self) -> None:
         while True:
             await asyncio.sleep(120)
-            flush_afk()
+            await asyncio.to_thread(flush_afk)
 
     def _make_embed(self, title: str, color: int, description: str = "") -> discord.Embed:
         embed = discord.Embed(color=color)
@@ -115,11 +185,6 @@ class AFK(commands.Cog, name="afk"):
 
             del afk_data[user_id]
             save_afk(afk_data)
-
-            try:
-                await message.author.edit(nick=afk_info.get("original_nick", message.author.display_name))
-            except Exception:
-                pass
 
             embed = discord.Embed(color=0x2ECC71)
             embed.set_author(name="👋 Welcome Back!")
@@ -178,11 +243,6 @@ class AFK(commands.Cog, name="afk"):
                 del afk_data[user_id]
                 save_afk(afk_data)
 
-                try:
-                    await member.edit(nick=afk_info.get("original_nick", member.display_name))
-                except Exception:
-                    pass
-
                 dm_channel = member.dm_channel
                 if not dm_channel:
                     dm_channel = await member.create_dm()
@@ -209,22 +269,14 @@ class AFK(commands.Cog, name="afk"):
             await ctx.send(embed=embed)
             return
 
-        original_nick = ctx.author.display_name
-
         afk_data[user_id] = {
             "name": ctx.author.display_name,
-            "original_nick": original_nick,
             "reason": reason,
             "timestamp": time.time(),
         }
         save_afk(afk_data)
 
         self._ignored_messages.add(ctx.message.id)
-
-        try:
-            await ctx.author.edit(nick=f"[AFK] {ctx.author.display_name}")
-        except Exception:
-            pass
 
         embed = discord.Embed(color=0xF39C12)
         embed.set_author(name="📴 AFK Set")
@@ -267,20 +319,12 @@ class AFK(commands.Cog, name="afk"):
             )
             return
 
-        original_nick = interaction.user.display_name
-
         afk_data[user_id] = {
             "name": interaction.user.display_name,
-            "original_nick": original_nick,
             "reason": reason,
             "timestamp": time.time(),
         }
         save_afk(afk_data)
-
-        try:
-            await interaction.user.edit(nick=f"[AFK] {interaction.user.display_name}")
-        except Exception:
-            pass
 
         embed = discord.Embed(color=0xF39C12)
         embed.set_author(name="📴 AFK Set")
